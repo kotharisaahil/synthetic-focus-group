@@ -1,0 +1,139 @@
+# Example study: concept test for a fictional plant-based milk.
+# Run it offline first:   sfg run examples/oat-milk-concept.yaml --mock
+# Then for real:          sfg run examples/oat-milk-concept.yaml --provider anthropic
+
+title: Oatlight Barista concept test
+objective: >
+  Find out whether weekly milk buyers would switch to a premium oat milk, what would stop
+  them, and which of the product's claims they find believable.
+category: milk and plant-based milk, especially for coffee at home
+stimulus: >
+  Oatlight Barista is a new oat milk made for coffee. It foams like dairy milk, has no added
+  sugar, and uses oats grown with regenerative farming practices. A 1-liter carton costs
+  $5.49, about $1.50 more than the leading oat milk brand. Once opened it stays fresh for
+  14 days, twice as long as most oat milks.
+
+groups: 2
+group_size: 6
+seed: 42
+
+population:
+  - name: age
+    type: uniform
+    min: 22
+    max: 60
+    unit: years old
+
+  - name: household_income
+    label: household income
+    type: lognormal
+    median: 78000
+    p90: 175000
+    unit: USD
+
+  - name: household
+    type: categorical
+    options:
+      lives alone: 28
+      couple, no children: 30
+      family with children at home: 42
+
+  - name: milk_habit
+    label: current milk habit
+    type: categorical
+    options:
+      dairy milk only: 35
+      mix of dairy and plant-based: 40
+      plant-based only: 25
+
+  - name: coffee_at_home
+    label: coffee made at home
+    type: categorical
+    options:
+      daily: 55
+      a few times a week: 30
+      rarely: 15
+
+  - name: price_sensitivity
+    label: price sensitivity
+    type: scale
+    mean: 4.2
+    sd: 1.6
+    low_label: buys on quality and rarely checks the price
+    high_label: always checks unit prices and switches for small savings
+
+  - name: sustainability_concern
+    label: concern about environmental impact
+    type: scale
+    mean: 3.9
+    sd: 1.7
+    low_label: does not factor it into shopping at all
+    high_label: actively changes purchases to reduce impact
+
+  - name: claim_skepticism
+    label: skepticism of marketing claims
+    type: scale
+    mean: 4.5
+    sd: 1.4
+    low_label: takes packaging claims at face value
+    high_label: assumes most claims are exaggerated until proven
+
+ratings:
+  - id: appeal
+    label: Overall appeal
+    question: How appealing is Oatlight Barista to you overall?
+    low_label: not at all appealing
+    high_label: extremely appealing
+    expect:
+      - attribute: sustainability_concern
+        direction: positive
+
+  - id: purchase_intent
+    label: Purchase intent at $5.49
+    question: How likely would you be to buy Oatlight Barista at $5.49 in the next month?
+    low_label: definitely would not
+    high_label: definitely would
+    expect:
+      - attribute: price_sensitivity
+        direction: negative
+
+  - id: claim_belief
+    label: Belief in the farming claim
+    question: How much do you believe the regenerative farming claim?
+    low_label: do not believe it at all
+    high_label: fully believe it
+    expect:
+      - attribute: claim_skepticism
+        direction: negative
+
+guide:
+  - title: Current habits
+    question: Walk me through the milk you buy today and how it ends up in your coffee.
+    probes:
+      - What would make you switch from what you buy now?
+      - When did you last change the milk you buy, and why?
+    max_turns: 8
+
+  - title: First reaction
+    question: Here is Oatlight Barista. What is your honest first reaction?
+    probes:
+      - Which part of the description stood out, good or bad?
+      - Who do you picture buying this?
+    max_turns: 9
+
+  - title: Price and value
+    question: It costs $5.49, about $1.50 more than the leading oat milk. How does that land?
+    probes:
+      - Does the 14-day freshness change the math for you?
+      - What price would make this an easy yes?
+    max_turns: 9
+
+  - title: Believability
+    question: The carton says the oats come from regenerative farms. What does that mean to you, and do you believe it?
+    probes:
+      - What would make that claim more credible?
+      - Does a claim like this make you more or less likely to buy?
+    max_turns: 8
+
+models:
+  provider: anthropic
