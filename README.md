@@ -121,7 +121,7 @@ The thresholds are heuristics that flag findings worth a closer look, not signif
 ## Quickstart
 
 ```bash
-git clone https://github.com/dualduel/synthetic-focus-group
+git clone https://github.com/kotharisaahil/synthetic-focus-group
 cd synthetic-focus-group
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]"
