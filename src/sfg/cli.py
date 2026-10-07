@@ -1,4 +1,4 @@
-"""Command line interface: validate a study, preview its sample, and run it."""
+"""Command line interface: validate a study, preview its sample, run it, and follow up with participants."""
 
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ from . import __version__
 from .config import CategoricalDim, Study, load_study
 from .llm import LLM, LLMError, make_provider
 from .metrics import compute_metrics
-from .report import spec_text, write_run
+from .interview import Interview, RunNotFound, find_participant, load_run
+from .report import rewrite_report, spec_text, write_run
 from .sampling import format_attr, format_value, sample_population
-from .session import run_study
+from .session import estimate_calls, run_study
 
 app = typer.Typer(add_completion=False, help="Run a synthetic focus group from a study file.")
 console = Console()
@@ -75,6 +76,12 @@ def validate(study_file: Path = typer.Argument(..., help="Path to a study YAML")
     console.print(f"[green]Valid.[/green] [bold]{s.title}[/bold]")
     groups = f"{s.groups} group" + ("" if s.groups == 1 else "s")
     console.print(f"  {groups} × {s.group_size} participants, {len(s.guide)} topic{'' if len(s.guide) == 1 else 's'}, {len(s.ratings)} private ratings")
+    est = estimate_calls(s)
+    models = s.models.resolved()
+    console.print(
+        f"  About {est['total']:,} model calls: {est['participant']:,} to the participant model ({models['participant']}), "
+        f"{est['moderator'] + est['analyst']:,} to the moderator/analyst model ({models['moderator']})"
+    )
     hyps = sum(len(r.expect) for r in s.ratings)
     console.print(f"  {len(s.population)} population attributes ({sum(d.anchor for d in s.population)} fixed attitudes), {hyps} fidelity hypotheses")
     if s.benchmark:
@@ -134,7 +141,14 @@ def run(
         first = s.guide[0].model_copy(update={"max_turns": min(s.guide[0].max_turns, 4)})
         updates.update({"groups": 1, "group_size": 3, "guide": [first.model_dump()]})
     if updates:
-        s = Study.model_validate({**s.model_dump(), **updates})
+        try:
+            s = Study.model_validate({**s.model_dump(), **updates})
+        except ValidationError as e:
+            console.print("[red]Those options don't fit the study:[/red]")
+            for err in e.errors():
+                loc = ".".join(str(x) for x in err["loc"])
+                console.print(f"  • {loc}: {err['msg']}")
+            raise typer.Exit(1)
     prov = "mock" if mock else (provider or s.models.provider)
 
     try:
@@ -151,7 +165,8 @@ def run(
 
     total = s.groups * s.group_size
     console.print(f"[bold]{s.title}[/bold] · {prov} · {s.groups} × {s.group_size} participants · {len(s.guide)} topic{'' if len(s.guide) == 1 else 's'}")
-    console.print(f"Writing to {run_dir}")
+    est = estimate_calls(s)
+    console.print(f"Writing to {run_dir} · about {est['total']:,} model calls")
     try:
         with console.status("Starting...") as status:
             result = run_study(s, llm, progress=lambda msg: status.update(msg))
@@ -178,6 +193,88 @@ def run(
         for f in warns:
             console.print(f"  • {f.message}")
     console.print(f"Report: [link=file://{paths['report_html'].resolve()}]{paths['report_html']}[/link]")
+
+
+def _open_run(run_dir: Path):
+    try:
+        return load_run(run_dir)
+    except RunNotFound as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def ask(
+    run_dir: Path = typer.Argument(..., help="A finished run folder, e.g. runs/oatlight-...-20260927-163334"),
+    question: Optional[str] = typer.Argument(None, help="Question to ask. Leave out for a live conversation."),
+    participant: Optional[list[str]] = typer.Option(None, "--participant", "-p", help="Who to interview (repeatable)"),
+    everyone: bool = typer.Option(False, "--all", help="Put the question to every participant, one by one"),
+    provider: Optional[str] = typer.Option(None, help="Override the provider used for the original run"),
+) -> None:
+    """Interview participants one-on-one after the session.
+
+    Each participant remembers their group's whole discussion and their own private ratings.
+    Interviews are saved under the run folder in interviews/.
+    """
+    result = _open_run(run_dir)
+    _load_dotenv(_find_dotenv(run_dir / "data.json"))
+    prov = provider or result.provider
+    models = result.models if prov == result.provider else result.study.models.resolved(prov)
+
+    if everyone:
+        people = list(result.personas)
+    elif participant:
+        people = []
+        for name in participant:
+            p = find_participant(result, name)
+            if p is None:
+                console.print(f"[red]No participant named {name}.[/red] In this run: {', '.join(x.name for x in result.personas)}")
+                raise typer.Exit(1)
+            people.append(p)
+    else:
+        console.print("Choose who to interview with --participant NAME, or --all.")
+        console.print("Participants: " + ", ".join(f"{p.name} (group {p.group})" for p in result.personas))
+        raise typer.Exit(1)
+    if len(people) > 1 and not question:
+        console.print("[red]Give a question when interviewing more than one person.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        llm = LLM(make_provider(prov), models, log_path=run_dir / "calls.jsonl")
+    except LLMError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if question:
+            for p in people:
+                iv = Interview(result, p, llm)
+                reply = iv.ask(question)
+                console.print(f"\n[bold]{p.name}[/bold] [dim]({p.summary(result.study)})[/dim]\n{reply}")
+                iv.save(run_dir)
+            console.print(f"\n[dim]Saved to {run_dir / 'interviews'}[/dim]")
+            return
+        p = people[0]
+        iv = Interview(result, p, llm)
+        console.print(f"Interviewing [bold]{p.name}[/bold] ({p.summary(result.study)}). Empty line to finish.")
+        while True:
+            q = console.input("[bold cyan]You:[/bold cyan] ").strip()
+            if not q:
+                break
+            console.print(f"[bold]{p.name}:[/bold] {iv.ask(q)}")
+        if iv.history:
+            console.print(f"[dim]Saved to {iv.save(run_dir)}[/dim]")
+    except LLMError as e:
+        console.print(f"[red]Interview stopped:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def report(run_dir: Path = typer.Argument(..., help="A finished run folder")) -> None:
+    """Re-render a finished run's report (no model calls). Useful after upgrading the tool."""
+    result = _open_run(run_dir)
+    paths = rewrite_report(result, compute_metrics(result), run_dir)
+    console.print(f"Report: {paths['report_html']}")
 
 
 @app.command()

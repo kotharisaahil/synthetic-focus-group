@@ -53,3 +53,9 @@ def test_explicit_models_only_apply_to_their_provider(study):
     s = study.model_copy(update={"models": study.models.model_copy(update={"participant": "claude-custom"})})
     assert s.models.resolved("anthropic")["participant"] == "claude-custom"
     assert s.models.resolved("openai")["participant"] != "claude-custom"
+
+
+def test_custom_name_pool_must_cover_a_group(study):
+    data = _base(study, names=["Ana", "Bo"])
+    with pytest.raises(ValidationError, match="each group needs"):
+        Study.model_validate(data)

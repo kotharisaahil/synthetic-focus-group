@@ -10,6 +10,21 @@ Design notes
 """
 
 # ---------------------------------------------------------------------------
+# Session language
+# ---------------------------------------------------------------------------
+
+
+def language_note(language: str, who: str = "everything you say") -> str:
+    """Appended to system prompts when a study runs in a language other than English."""
+    if not language or language.strip().lower() == "english":
+        return ""
+    return (
+        f"\n\nThis session is conducted in {language}. Write {who} in {language}. "
+        "Keep any JSON keys and fixed values (such as action names) exactly as specified, in English."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Persona backstory
 # ---------------------------------------------------------------------------
 
@@ -20,7 +35,8 @@ BACKSTORY_SYSTEM = (
 )
 
 BACKSTORY_USER = """Write a background for {name} in 3 or 4 sentences, in third person.
-Cover their daily routine, their household, how they currently shop for {category}, and one
+Cover their day-to-day situation (at home or at work, whichever the attributes point to), their
+current relationship with {category} (how they buy, use, or make decisions about it), and one
 detail that makes them distinct. Do not contradict any attribute below.
 
 Attributes:
@@ -30,7 +46,7 @@ Attitudes to reflect:
 {anchors}
 
 This background describes their life before the research session. Do not mention any
-specific new product or brand launch, and do not predict how they will react to one.
+specific new product, service, or launch, and do not predict how they will react to one.
 
 Return only the background text."""
 
@@ -38,7 +54,7 @@ Return only the background text."""
 # Participant
 # ---------------------------------------------------------------------------
 
-PARTICIPANT_SYSTEM = """You are taking part in a consumer focus group as the person described below.
+PARTICIPANT_SYSTEM = """You are taking part in a focus group as the person described below.
 Speak the way this person would in a real room: first person, your own words, with the
 priorities, vocabulary, and blind spots that fit your background. You are not an assistant,
 and you never talk about being an AI.
@@ -111,6 +127,20 @@ Answer as yourself, not as a cautious average respondent.
 Reply with JSON only:
 {{"rating": <whole number from {low} to {high}>, "reason": "<one sentence in your own voice>"}}"""
 
+INTERVIEW_CONTEXT = """
+
+Earlier today you took part in a group discussion about this. This is everything that was said:
+
+{transcript}
+
+On the private cards, you answered:
+{ratings}
+
+Now the researcher is talking with you one-on-one. No one else from the group is present, so
+you can say what you really think, including anything you held back in the room. Answer in
+1 to 4 sentences, in your own voice. Your attitudes are the same as before:
+{anchors}"""
+
 # ---------------------------------------------------------------------------
 # Moderator
 # ---------------------------------------------------------------------------
@@ -154,7 +184,7 @@ Choose your next action."""
 # ---------------------------------------------------------------------------
 
 ANALYST_SYSTEM = (
-    "You are a senior qualitative research analyst. You write findings a product team can act "
+    "You are a senior qualitative research analyst. You write findings a team can act "
     "on, you report tensions and minority views as carefully as the majority view, and you "
     "never invent evidence."
 )
@@ -189,3 +219,36 @@ Rules:
 - Every quote must be copied word for word from that participant's lines in the transcript.
   Do not paraphrase or tidy up inside quotation marks. Quotes that do not match are removed.
 - Base prevalence on how many participants actually said it, not on how forcefully."""
+
+ANALYST_SYNTH_USER = """Research objective: {objective}
+What participants reacted to: {stimulus}
+
+This study ran {n} separate groups. Each group was analyzed on its own, and those findings are
+below as JSON. Private ratings across all groups (collected before and after discussion):
+{ratings}
+
+Findings from each group:
+{group_findings}
+
+Combine them into one analysis of the whole study. Reply with JSON only, in this format:
+{{
+  "headline": "<one sentence>",
+  "summary": "<3 to 5 sentences>",
+  "themes": [
+    {{
+      "title": "<short title>",
+      "description": "<2 to 3 sentences, saying how widely it came up across groups>",
+      "prevalence": "<most | several | few>",
+      "quotes": [{{"speaker": "<participant name>", "quote": "<a quote from the group findings>"}}]
+    }}
+  ],
+  "disagreements": ["<where participants or groups split, and along what lines>"],
+  "open_questions": ["<what this study could not answer>"]
+}}
+
+Rules:
+- 3 to 6 themes, each with 1 to 3 quotes. Merge themes that recur across groups. Keep a theme
+  that came up in only one or two groups if it matters, and say so.
+- Prevalence describes the whole study: "most" only if it came up in most groups.
+- Quotes must be copied exactly from the quotes in the group findings, with the same speaker.
+  Do not write new quotes. Quotes that do not match the transcript are removed."""

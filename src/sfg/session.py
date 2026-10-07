@@ -25,7 +25,7 @@ from .personas import Persona, build_personas
 Progress = Optional[Callable[[str], None]]
 
 PARTICIPANT_CONTEXT_TURNS = 16  # how much recent discussion each participant sees
-GROUP_QUESTION_RESPONDERS = 3  # how many people answer a question put to the whole group
+GROUP_QUESTION_RESPONDERS = 3  # how many people answer a question put to the whole group (at least)
 
 
 @dataclass
@@ -61,7 +61,7 @@ class SessionResult:
 
 def _pick_responders(members: list[Persona], unheard: list[str], last: Optional[str], rng: random.Random) -> list[Persona]:
     """Who answers a question put to the whole room: people not yet heard first, then others."""
-    k = min(GROUP_QUESTION_RESPONDERS, len(members))
+    k = min(max(GROUP_QUESTION_RESPONDERS, len(members) // 3), len(members))  # 3 for 6 people, 4 for 12
     first = [m for m in members if m.name in unheard]
     rest = [m for m in members if m.name not in unheard and m.name != last]
     rng.shuffle(first)
@@ -208,28 +208,64 @@ def ratings_digest(study: Study, ratings: list[RatingRecord]) -> str:
     return "\n".join(lines)
 
 
-def run_study(study: Study, llm: LLM, progress: Progress = None) -> SessionResult:
-    rng = random.Random(study.seed)
-    personas = build_personas(study, llm, rng, progress)
+def _run_group(study: Study, llm: LLM, members: list[Persona], progress: Progress):
+    """One complete group session: opening ratings, the moderated discussion, closing ratings.
+
+    Groups share nothing, so they can run concurrently. Each has its own random stream, seeded
+    from the study seed and the group number, so results don't depend on which group finishes first.
+    """
+    g = members[0].group
+    rng = random.Random(f"{study.seed}-group-{g}")
     turns: list[Turn] = []
     ratings: list[RatingRecord] = []
     events: list[dict[str, Any]] = []
+    names = [p.name for p in members]
+    agents = {p.name: ParticipantAgent(p, study, llm, tuple(n for n in names if n != p.name)) for p in members}
+    moderator = ModeratorAgent(study, llm, names)
 
-    for g in range(1, study.groups + 1):
-        members = [p for p in personas if p.group == g]
-        names = [p.name for p in members]
-        agents = {p.name: ParticipantAgent(p, study, llm, tuple(n for n in names if n != p.name)) for p in members}
-        moderator = ModeratorAgent(study, llm, names)
+    _collect_ratings(study, members, agents, "pre", ratings, progress)
+    for index, topic in enumerate(study.guide):
+        run_topic(g, index, topic, members, agents, moderator, turns, rng, events, progress)
+    _collect_ratings(study, members, agents, "post", ratings, progress, format_turns(turns))
+    return turns, ratings, events
 
-        _collect_ratings(study, members, agents, "pre", ratings, progress)
-        for index, topic in enumerate(study.guide):
-            run_topic(g, index, topic, members, agents, moderator, turns, rng, events, progress)
-        discussion = format_turns([t for t in turns if t.group == g])
-        _collect_ratings(study, members, agents, "post", ratings, progress, discussion)
+
+def estimate_calls(study: Study) -> dict[str, int]:
+    """Rough number of model calls a study will make, split by model role.
+
+    Calibrated on live runs: the moderator makes about one call per turn of budget, and
+    participants about 1.5 replies per moderator turn in a group of 6 (more in bigger groups).
+    Treat it as plus or minus 25%.
+    """
+    n = study.groups * study.group_size
+    budget = study.groups * sum(t.max_turns for t in study.guide)
+    replies = round(budget * 1.5 * (study.group_size / 6) ** 0.5)
+    analyst = 1 if study.groups <= 3 else study.groups + 1
+    participant = n + 2 * n * len(study.ratings) + replies  # backstories, rating cards, replies
+    moderator = budget
+    return {"participant": participant, "moderator": moderator, "analyst": analyst,
+            "total": participant + moderator + analyst}
+
+
+def run_study(study: Study, llm: LLM, progress: Progress = None) -> SessionResult:
+    rng = random.Random(study.seed)
+    personas = build_personas(study, llm, rng, progress)
+    groups = [[p for p in personas if p.group == g] for g in range(1, study.groups + 1)]
+
+    turns: list[Turn] = []
+    ratings: list[RatingRecord] = []
+    events: list[dict[str, Any]] = []
+    results = parallel_map(
+        lambda members: _run_group(study, llm, members, progress), groups, study.models.max_parallel_groups
+    )
+    for g_turns, g_ratings, g_events in results:  # merged in group order
+        turns += g_turns
+        ratings += g_ratings
+        events += g_events
 
     if progress:
         progress("Analyst is writing the findings")
-    analysis = analyze(study, llm, turns, [p.name for p in personas], ratings_digest(study, ratings))
+    analysis = analyze(study, llm, turns, [p.name for p in personas], ratings_digest(study, ratings), progress)
 
     return SessionResult(
         study=study,

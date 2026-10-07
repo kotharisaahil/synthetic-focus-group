@@ -55,9 +55,26 @@ def test_small_samples_avoid_repeating_categorical_cells(study):
     assert len(set(combos)) == len(combos)
 
 
-def test_names_are_unique():
-    names = assign_names(12, random.Random(5))
-    assert len(set(names)) == 12
+def test_names_are_unique_for_the_whole_study():
+    names = assign_names(12, 10, random.Random(5))  # 120 people, more than the name pool
+    assert len(names) == 120 and len(set(names)) == 120
+
+
+def test_first_names_never_repeat_within_a_group():
+    names = assign_names(15, 12, random.Random(6))
+    for g in range(15):
+        firsts = [n.split()[0] for n in names[g * 12 : (g + 1) * 12]]
+        assert len(set(firsts)) == 12
+
+
+def test_small_studies_use_plain_first_names():
+    assert all(" " not in n for n in assign_names(2, 6, random.Random(7)))
+
+
+def test_custom_name_pool_is_used():
+    pool = ["Haruto", "Yui", "Sota", "Hina", "Ren", "Aoi"]
+    names = assign_names(1, 6, random.Random(8), pool)
+    assert sorted(names) == sorted(pool)
 
 
 def test_scale_description_explains_the_number():
@@ -71,3 +88,15 @@ def test_range_formatting():
     income = UniformDim(type="uniform", name="income", min=20000, max=90000, unit="USD")
     assert format_range(age, 22, 60) == "22 to 60 years old"
     assert format_range(income, 20000, 90000) == "$20,000 to $90,000"
+
+
+def test_large_numbers_get_thousands_separators_in_any_currency():
+    from sfg.config import LognormalDim
+    from sfg.sampling import format_value
+
+    mxn = LognormalDim(type="lognormal", name="rev", median=60000, p90=250000, unit="MXN")
+    usd = LognormalDim(type="lognormal", name="inc", median=60000, p90=250000, unit="USD")
+    assert format_value(mxn, 54941) == "54,941 MXN"
+    assert format_value(usd, 54941) == "$54,941"
+    age = UniformDim(type="uniform", name="age", min=18, max=65, unit="years old")
+    assert format_value(age, 34) == "34 years old"

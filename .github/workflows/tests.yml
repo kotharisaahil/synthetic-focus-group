@@ -17,4 +17,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
-      - run: sfg run examples/oat-milk-concept.yaml --mock --out /tmp/runs
+      - name: every example study validates and runs offline
+        run: |
+          for f in examples/*.yaml; do
+            sfg validate "$f" || exit 1
+            sfg run "$f" --mock --out /tmp/runs || exit 1
+          done

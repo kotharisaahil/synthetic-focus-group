@@ -85,3 +85,15 @@ def test_quick_preflight_is_small_and_complete(tmp_path):
     assert len(data["personas"]) == 3
     assert {t["topic"] for t in data["turns"]} == {0}
     assert data["analysis"]["headline"]
+
+
+def test_ask_and_report_commands(tmp_path):
+    runner.invoke(cli.app, ["run", EXAMPLE, "--mock", "--quick", "--out", str(tmp_path)])
+    run_dir = next(tmp_path.iterdir())
+    out = runner.invoke(cli.app, ["ask", str(run_dir), "What would change your mind?", "--all"])
+    assert out.exit_code == 0, out.output
+    assert len(list((run_dir / "interviews").glob("*.md"))) == 3
+    out = runner.invoke(cli.app, ["ask", str(run_dir), "--participant", "Nobody", "Hi?"])
+    assert out.exit_code == 1 and "No participant named" in out.output
+    out = runner.invoke(cli.app, ["report", str(run_dir)])
+    assert out.exit_code == 0 and (run_dir / "report.html").exists()

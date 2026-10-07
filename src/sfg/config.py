@@ -200,6 +200,9 @@ class ModelConfig(_Base):
     max_parallel_calls: int = Field(
         4, ge=1, le=16, description="Independent calls (backstories, private ratings) run concurrently"
     )
+    max_parallel_groups: int = Field(
+        3, ge=1, le=16, description="Groups run as separate sessions at the same time"
+    )
 
     def resolved(self, provider: Optional[str] = None) -> dict[str, str]:
         prov = provider or self.provider
@@ -224,12 +227,18 @@ class Study(_Base):
         description="The product category in plain words, e.g. 'milk for coffee at home'. "
         "Backstories use this instead of the stimulus, so personas aren't primed before the session."
     )
-    stimulus: str = Field(description="The product or concept participants react to")
+    stimulus: str = Field(description="The product, service, or concept participants react to")
+    language: str = Field("English", description="Language the whole session is conducted in")
+    names: Optional[list[str]] = Field(
+        None,
+        description="Optional pool of first names that fit the population (e.g. for a study in Japan). "
+        "Defaults to a broad international list.",
+    )
     population: list[Dimension]
     ratings: list[RatingItem]
     guide: list[Topic]
-    groups: int = Field(1, ge=1, le=10)
-    group_size: int = Field(6, ge=3, le=10)
+    groups: int = Field(1, ge=1, le=50)
+    group_size: int = Field(6, ge=3, le=12)
     seed: int = 7
     models: ModelConfig = Field(default_factory=ModelConfig)
     benchmark: Optional[str] = Field(
@@ -249,6 +258,10 @@ class Study(_Base):
         dupes = {n for n in names if names.count(n) > 1}
         if dupes:
             raise ValueError(f"duplicate population dimension names: {sorted(dupes)}")
+        if self.names is not None and len(set(self.names)) < self.group_size:
+            raise ValueError(
+                f"names: {len(set(self.names))} distinct names given, but each group needs {self.group_size}"
+            )
         ids = [r.id for r in self.ratings]
         if len(ids) != len(set(ids)):
             raise ValueError("rating ids must be unique")

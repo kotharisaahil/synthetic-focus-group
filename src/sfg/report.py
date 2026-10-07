@@ -12,6 +12,7 @@ from .config import CategoricalDim, LognormalDim, NormalDim, ScaleDim, Study, Un
 from .llm import CallRecord
 from .metrics import ItemStats, Metrics
 from .sampling import format_attr, format_range, format_value
+from .segments import segment_tables
 from .session import SessionResult
 
 MOCK_NOTICE = (
@@ -64,6 +65,16 @@ def transcript_md(result: SessionResult) -> str:
     return "\n".join(out)
 
 
+def _shifts(metrics: Metrics) -> list[tuple[ItemStats, float]]:
+    """Average change per rating item from before to after the discussion, largest first."""
+    out = [(it, round(it.post["mean"] - it.pre["mean"], 2)) for it in metrics.items if it.pre["n"] and it.post["n"]]
+    return sorted(out, key=lambda x: abs(x[1]), reverse=True)
+
+
+def _warn_count(metrics: Metrics) -> int:
+    return sum(1 for f in metrics.flags if f.level == "warn")
+
+
 def report_md(result: SessionResult, metrics: Metrics) -> str:
     a = result.analysis
     study = result.study
@@ -80,13 +91,27 @@ def report_md(result: SessionResult, metrics: Metrics) -> str:
         out += ["## Where participants split", ""] + [f"- {d}" for d in a.disagreements] + [""]
     if a.open_questions:
         out += ["## Open questions", ""] + [f"- {q}" for q in a.open_questions] + [""]
-    out += ["## Private ratings", "", "| Item | Before: mean (SD) | After: mean (SD) | Spread shrank by |", "|---|---|---|---|"]
+    out += ["## How opinions moved", "", "Private ratings, collected before anyone spoke and again at the end.", "",
+            "| Item | Before | After | Change |", "|---|---|---|---|"]
     for it in metrics.items:
-        out.append(
-            f"| {it.label} | {it.pre['mean']} ({it.pre['sd']}) | {it.post['mean']} ({it.post['sd']}) | {it.conformity['convergence']:.0%} |"
-        )
-    out += ["", "## Reliability checks", ""]
-    out += [f"- **{f.level.upper()}** [{f.check}] {f.message}" for f in metrics.flags] or ["- No issues flagged."]
+        delta = it.post["mean"] - it.pre["mean"]
+        out.append(f"| {it.label} | {it.pre['mean']:.2f} | {it.post['mean']:.2f} | {delta:+.2f} |")
+    tables = segment_tables(result)
+    if tables:
+        out += ["", "## Findings by segment", ""]
+        items = study.ratings
+        for t in tables:
+            out += [f"### By {t.label}", "", "| Segment | n | " + " | ".join(i.display for i in items) + " |",
+                    "|---|---|" + "---|" * len(items)]
+            for r in t.rows:
+                cells = [f"{_num(r.means[i.id]['pre'])} → {_num(r.means[i.id]['post'])}" for i in items]
+                out.append(f"| {r.segment}{' (small)' if r.small else ''} | {r.n} | " + " | ".join(cells) + " |")
+            out.append("")
+    w = _warn_count(metrics)
+    out += ["## Trust check", "",
+            f"{w} warning{'' if w == 1 else 's'}. Synthetic participants fail in known ways; these checks say which findings to lean on.",
+            ""]
+    out += [f"- **{f.level.upper()}** {f.message}" for f in metrics.flags] or ["- No issues flagged."]
     out += ["", "## Method", "", f"- Groups: {study.groups} × {study.group_size} participants, seed {study.seed}",
             f"- Provider: {result.provider}; models: {', '.join(f'{k}={v}' for k, v in result.models.items())}", ""]
     out += ["| Attribute | Distribution | Fixed attitude |", "|---|---|---|"]
@@ -135,6 +160,10 @@ details{background:var(--card);border:1px solid var(--line);border-radius:12px;p
 .turn{margin:6px 0;font-size:14px}.turn .who{font-weight:650}.turn.mod{color:var(--muted);font-style:italic}.turn .note{display:block;font-size:11.5px;color:var(--warn);font-style:normal}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
 footer{margin-top:48px;color:var(--muted);font-size:12px}
+a.tile{text-decoration:none;color:inherit;display:block}a.tile:hover{border-color:var(--accent)}
+.seg{margin-bottom:14px}.seg .sub{font-size:11.5px;color:var(--muted);font-weight:400}.small{font-size:11px;color:var(--warn);font-weight:600}
+.okc{color:var(--ok);font-weight:600}.warnc{color:var(--warn);font-weight:600}
+code{background:#efece6;padding:1px 6px;border-radius:5px;font-size:12.5px}
 """
 
 
@@ -155,22 +184,55 @@ def _tile(k: str, v: str, s: str, cls: str = "") -> str:
     return f'<div class="tile {cls}"><div class="k">{escape(k)}</div><div class="v">{escape(v)}</div><div class="s">{escape(s)}</div></div>'
 
 
+def _num(x) -> str:
+    return "–" if x is None else f"{x:.1f}"
+
+
+def _segments_html(result: SessionResult) -> str:
+    tables = segment_tables(result)
+    if not tables:
+        return ""
+    e = escape
+    items = result.study.ratings
+    labels = {i.id: i.display for i in items}
+    blocks = []
+    for t in tables:
+        head = "".join(f"<th>{e(i.display)}<div class='sub'>before → after</div></th>" for i in items)
+        rows = ""
+        for r in t.rows:
+            cells = ""
+            for i in items:
+                pre, post = r.means[i.id]["pre"], r.means[i.id]["post"]
+                cells += f"<td>{_num(pre)} → <strong>{_num(post)}</strong></td>"
+            small = " <span class='small'>small group</span>" if r.small else ""
+            rows += f"<tr><td><strong>{e(r.segment)}</strong>{small}<div class='sub'>{e(', '.join(r.names))}</div></td><td>{r.n}</td>{cells}</tr>"
+        lead = ""
+        if t.widest_item and t.widest_gap:
+            lead = f"<p class='meta'>Before discussion, these segments differed most on <strong>{e(labels[t.widest_item])}</strong> ({t.widest_gap:g} points apart).</p>"
+        blocks.append(f"<div class='card seg'><h3>By {e(t.label)}</h3>{lead}<table><tr><th>Segment</th><th>n</th>{head}</tr>{rows}</table></div>")
+    return "<h2>Findings by segment</h2><p class='meta'>Average private ratings for each kind of participant. With small panels, read these as directions to explore, not results.</p>" + "".join(blocks)
+
+
 def report_html(result: SessionResult, metrics: Metrics) -> str:
     study, a = result.study, result.analysis
     e = escape
     n = len(result.personas)
-    spread_warns = sum(1 for f in metrics.flags if f.check in ("spread", "benchmark") and f.level == "warn")
-    fid = [f for it in metrics.items for f in it.anchor_fidelity]
-    fid_ok = sum(1 for f in fid if f["ok"])
-    max_conv = max((it.conformity["convergence"] for it in metrics.items), default=0.0)
+    warns = _warn_count(metrics)
+    probes = sum(1 for t in result.turns if t.kind == "moderator" and t.action == "probe")
+    shifts = _shifts(metrics)
 
-    tiles = "".join([
+    tiles = [
         _tile("Participants", str(n), f"{study.groups} {'group' if study.groups == 1 else 'groups'} of {study.group_size}"),
-        _tile("Response spread", "OK" if not spread_warns else f"{spread_warns} flag" + ("" if spread_warns == 1 else "s"), "mean regression check", "ok" if not spread_warns else "warn"),
-        _tile("Persona fidelity", f"{fid_ok}/{len(fid)}" if fid else "n/a", "attribute hypotheses that held", "ok" if fid and fid_ok == len(fid) else ("warn" if fid else "")),
-        _tile("Group pull", f"{max_conv:.0%}", "largest drop in spread after discussion", "warn" if max_conv > 0.4 else "ok"),
-        _tile("Quotes removed", str(metrics.quotes_removed), "failed verbatim check", "warn" if metrics.quotes_removed else "ok"),
-    ])
+        _tile("Discussion", f"{len(result.turns)} turns", f"{len(study.guide)} topics, {probes} follow-up {'probe' if probes == 1 else 'probes'}"),
+    ]
+    if shifts:
+        it, delta = shifts[0]
+        tiles.append(_tile("Biggest shift", f"{delta:+.1f}", f"{it.label}, average rating after the discussion"))
+    tiles.append(
+        f'<a class="tile {"warn" if warns else "ok"}" href="#trust"><div class="k">Trust check</div>'
+        f'<div class="v">{"No issues" if not warns else f"{warns} warning" + ("" if warns == 1 else "s")}</div>'
+        f'<div class="s">what to lean on, and what not to</div></a>'
+    )
 
     themes = []
     for th in a.themes:
@@ -188,32 +250,20 @@ def report_html(result: SessionResult, metrics: Metrics) -> str:
 
     items_html = []
     for it in metrics.items:
-        chips = ""
-        for f in it.anchor_fidelity:
-            cls = "ok" if f["ok"] else "warn"
-            rho = "n/a" if f["rho"] is None else f"{f['rho']:+.2f}"
-            chips += f'<span class="chip {cls}">{e(f["label"])}: expected {e(f["direction"])} link, rho {rho}</span>'
-        bench = ""
-        if it.benchmark:
-            b = it.benchmark
-            bench = f'<div class="stats" style="margin-top:6px"><span>Human benchmark SD <strong>{b["human_sd"]}</strong></span><span>Variance ratio <strong>{b["variance_ratio"]}</strong></span><span>Distance (TVD) <strong>{b["tvd"]}</strong></span></div>'
         c = it.conformity
+        delta = (it.post["mean"] or 0) - (it.pre["mean"] or 0)
         items_html.append(
             f'<div class="card item"><div class="lbl">{e(it.label)}</div><div class="q">{e(it.question)}</div>'
             f'<div class="meta">{it.low} to {it.high} scale</div>{_dist_html(it)}'
-            f'<div class="stats"><span>Before: mean <strong>{it.pre["mean"]}</strong>, SD <strong>{it.pre["sd"]}</strong></span>'
-            f'<span>After: mean <strong>{it.post["mean"]}</strong>, SD <strong>{it.post["sd"]}</strong></span>'
-            f'<span>Changed their answer <strong>{c["changed_share"]:.0%}</strong></span>'
-            f'<span>Spread change <strong>{-c["convergence"]:+.0%}</strong></span></div>'
-            f"{bench}<div>{chips}</div></div>"
+            f'<div class="stats"><span>Before: average <strong>{it.pre["mean"]:.2f}</strong></span>'
+            f'<span>After: average <strong>{it.post["mean"]:.2f}</strong> ({delta:+.2f})</span>'
+            f'<span>Changed their answer <strong>{c["changed_share"]:.0%}</strong></span></div></div>'
         )
-
-    flags = "".join(f'<li><span class="lvl {f.level}">{f.level.upper()}</span>{e(f.message)}</li>' for f in metrics.flags) or "<li>No issues flagged.</li>"
 
     people = []
     for p in result.personas:
         attrs = "".join(f"<li>{e(d.display)}: {e(format_attr(d, p.attributes[d.name]))}</li>" for d in study.population)
-        people.append(f'<div class="card person"><h3>{e(p.name)}</h3><div class="id">{e(p.id)}</div><ul>{attrs}</ul><p>{e(p.backstory)}</p></div>')
+        people.append(f'<div class="card person"><h3>{e(p.name)}</h3><div class="id">Group {p.group}</div><ul>{attrs}</ul><p>{e(p.backstory)}</p></div>')
 
     transcripts = []
     for g in sorted({p.group for p in result.personas}):
@@ -222,16 +272,38 @@ def report_html(result: SessionResult, metrics: Metrics) -> str:
             if t.topic != current:
                 current = t.topic
                 body.append(f'<div class="topic">{e(study.guide[t.topic].title)}</div>')
-            note = f'<span class="note">Guardrail: {e(t.note)}</span>' if t.note else ""
             if t.kind == "moderator":
-                body.append(f'<div class="turn mod"><span class="who">Moderator:</span> {e(t.text)}{note}</div>')
+                body.append(f'<div class="turn mod"><span class="who">Moderator:</span> {e(t.text)}</div>')
             else:
                 body.append(f'<div class="turn"><span class="who">{e(t.speaker)}:</span> {e(t.text)}</div>')
-        transcripts.append(f"<details><summary>Group {g} transcript ({sum(1 for t in result.turns if t.group == g)} turns)</summary>{''.join(body)}</details>")
+        members = ", ".join(p.name for p in result.personas if p.group == g)
+        transcripts.append(f"<details><summary>Group {g}: {e(members)}</summary>{''.join(body)}</details>")
+
+    # trust check: compact, at the end
+    fid_rows = "".join(
+        f"<tr><td>{e(it.label)}</td><td>{e(f['label'])} ({e(f['direction'])})</td>"
+        f"<td>{'n/a' if f['rho'] is None else format(f['rho'], '+.2f')}</td>"
+        f"<td class=\"{'okc' if f['ok'] else 'warnc'}\">{'holds' if f['ok'] else 'weak'}</td></tr>"
+        for it in metrics.items for f in it.anchor_fidelity
+    )
+    fid_table = (
+        f"<h3 style='margin-top:18px'>Do participants' traits drive their answers?</h3>"
+        f"<table><tr><th>Rating</th><th>Expected to depend on</th><th>Rank correlation</th><th></th></tr>{fid_rows}</table>"
+        if fid_rows else ""
+    )
+    flags = "".join(f'<li><span class="lvl {f.level}">{f.level.upper()}</span>{e(f.message)}</li>' for f in metrics.flags) or "<li>No issues flagged.</li>"
+    trust = (
+        f'<h2 id="trust">Trust check</h2><div class="card">'
+        f"<p class='meta' style='margin-top:0'>Synthetic participants fail in known ways: answers cluster near the middle, "
+        f"traits stop mattering, groups pull everyone together, and summaries invent quotes. These checks run on every "
+        f"session and say which findings to lean on.</p>"
+        f'<ul class="flags clean" style="list-style:none;padding:0">{flags}</ul>{fid_table}</div>'
+    )
 
     spec_rows = "".join(
         f"<tr><td>{e(d.display)}</td><td>{e(spec_text(d))}</td><td>{'yes' if d.anchor else ''}</td></tr>" for d in study.population
     )
+    guide_rows = "".join(f"<tr><td>{i + 1}. {e(t.title)}</td><td>{e(t.question)}</td></tr>" for i, t in enumerate(study.guide))
     usage_rows = "".join(
         f"<tr><td>{e(model)}</td><td>{u['calls']}</td><td>{u['input']:,}</td><td>{u['output']:,}</td></tr>"
         for model, u in result.usage.items()
@@ -241,39 +313,42 @@ def report_html(result: SessionResult, metrics: Metrics) -> str:
         if result.usage and result.provider != "mock"
         else ""
     )
-    guide_rows = "".join(f"<tr><td>{i + 1}. {e(t.title)}</td><td>{e(t.question)}</td></tr>" for i, t in enumerate(study.guide))
     models = ", ".join(f"{k}: {v}" for k, v in result.models.items())
     mock = f'<div class="mock">{e(MOCK_NOTICE)}</div>' if result.provider == "mock" else ""
     now = datetime.now().strftime("%B %d, %Y %H:%M")
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{e(study.title)} · Synthetic focus group report</title><style>{CSS}</style></head>
+<title>{e(study.title)} · Synthetic focus group</title><style>{CSS}</style></head>
 <body><div class="wrap">
-<header><div class="eyebrow">Synthetic focus group report</div><h1>{e(study.title)}</h1>
+<header><div class="eyebrow">Synthetic focus group</div><h1>{e(study.title)}</h1>
 <div class="meta">{now} · {e(result.provider)} ({e(models)}) · seed {study.seed}</div>
 <p class="objective"><strong>Objective:</strong> {e(study.objective)}</p>{mock}</header>
 
-<h2>At a glance</h2>
+<h2>What we heard</h2>
 <div class="card"><p class="headline">{e(a.headline)}</p><div>{e(a.summary)}</div></div>
-<div class="tiles">{tiles}</div>
+<div class="tiles">{''.join(tiles)}</div>
 
 <h2>Themes</h2><div class="themes">{''.join(themes)}</div>{split}
 
-<h2>Private ratings, before and after discussion</h2>
-<p class="meta">Every participant rated privately before hearing anyone else, then again at the end. The gap shows how much the conversation moved people.</p>
+<h2>How opinions moved</h2>
+<p class="meta">Everyone rated privately before hearing anyone else, then again at the end, after the whole discussion.</p>
 {''.join(items_html)}
 
-<h2>Reliability checks</h2><div class="card"><ul class="flags clean" style="list-style:none;padding:0">{flags}</ul></div>
+{_segments_html(result)}
 
-<h2>Participants</h2><div class="people">{''.join(people)}</div>
+<h2>Participants</h2>
+<p class="meta">Each person's traits were drawn from the population in the study file. Want to hear more from someone? Interview them one-on-one: <code>sfg ask &lt;this run folder&gt; -p NAME</code></p>
+{f'<div class="people">{"".join(people)}</div>' if n <= 12 else f'<details><summary>Show all {n} participants</summary><div class="people" style="margin-top:12px">{"".join(people)}</div></details>'}
 
 <h2>Transcripts</h2>{''.join(transcripts)}
+
+{trust}
 
 <h2>Method</h2>
 <div class="card"><h3>What participants reacted to</h3><p>{e(study.stimulus)}</p>
 <h3 style="margin-top:18px">Population</h3><table><tr><th>Attribute</th><th>Distribution</th><th>Fixed attitude</th></tr>{spec_rows}</table>
-<h3 style="margin-top:18px">Session protocol</h3><p>Participants read the concept before the session and each rated it privately. The moderator then ran the discussion guide below. At the end, each participant saw the whole discussion and their own first answer, and rated again in private.</p>
+<h3 style="margin-top:18px">Session protocol</h3><p>Participants read the concept before the session and each rated it privately. The moderator then ran the discussion guide below. When the moderator put a question to the whole group, everyone gave a first reaction before hearing the others. At the end, each participant saw the whole discussion and their own first answer, and rated again in private.</p>
 <h3 style="margin-top:18px">Discussion guide</h3><table><tr><th>Topic</th><th>Guide question</th></tr>{guide_rows}</table>{usage_block}</div>
 
 <footer>Generated by synthetic-focus-group. Synthetic participants are useful for sharpening hypotheses and piloting discussion guides; they are not a substitute for talking to real people.</footer>
@@ -295,6 +370,7 @@ def run_data(result: SessionResult, metrics: Metrics) -> dict[str, Any]:
         "turns": [t.to_dict() for t in result.turns],
         "analysis": result.analysis.model_dump(),
         "metrics": metrics.to_dict(),
+        "segments": [t.to_dict() for t in segment_tables(result)],
         "guardrail_events": result.guardrail_events,
         "usage": result.usage,
     }
@@ -316,4 +392,20 @@ def write_run(result: SessionResult, metrics: Metrics, calls: list[CallRecord], 
     with paths["calls"].open("w", encoding="utf-8") as f:
         for c in calls:
             f.write(json.dumps(c.to_dict(), default=str) + "\n")
+    return paths
+
+
+def rewrite_report(result: SessionResult, metrics: Metrics, out_dir: Path) -> dict[str, Path]:
+    """Regenerate the report files for an existing run, leaving its call log untouched."""
+    out_dir = Path(out_dir)
+    paths = {
+        "report_html": out_dir / "report.html",
+        "report_md": out_dir / "report.md",
+        "transcript": out_dir / "transcript.md",
+        "data": out_dir / "data.json",
+    }
+    paths["report_html"].write_text(report_html(result, metrics), encoding="utf-8")
+    paths["report_md"].write_text(report_md(result, metrics), encoding="utf-8")
+    paths["transcript"].write_text(transcript_md(result), encoding="utf-8")
+    paths["data"].write_text(json.dumps(run_data(result, metrics), indent=2, default=str), encoding="utf-8")
     return paths

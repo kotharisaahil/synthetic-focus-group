@@ -182,7 +182,10 @@ def compute_metrics(result: SessionResult) -> Metrics:
     study: Study = result.study
     ratings = result.ratings
     groups = sorted({p.group for p in result.personas})
-    benchmark = load_benchmark(study.benchmark) if study.benchmark else {}
+    benchmark: dict[str, dict[int, float]] = {}
+    missing_benchmark = bool(study.benchmark) and not Path(study.benchmark).is_file()
+    if study.benchmark and not missing_benchmark:
+        benchmark = load_benchmark(study.benchmark)
     by_id = {p.id: p for p in result.personas}
     flags: list[Flag] = []
     items: list[ItemStats] = []
@@ -251,6 +254,8 @@ def compute_metrics(result: SessionResult) -> Metrics:
 
         items.append(ItemStats(item.id, item.display, item.question, item.low, item.high, pre, post, conformity, fidelity, bench))
 
+    if missing_benchmark:
+        flags.append(Flag("info", "benchmark", f"Benchmark file not found ({study.benchmark}); comparison skipped."))
     removed = result.analysis.quotes_removed
     if removed:
         flags.append(Flag("warn", "evidence", f"The analyst produced {removed} quote{'' if removed == 1 else 's'} that did not match the transcript; {'it was' if removed == 1 else 'they were'} removed."))

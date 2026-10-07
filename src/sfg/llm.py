@@ -23,6 +23,7 @@ ROLE_MODEL = {
     "participant": "participant",
     "moderator": "moderator",
     "analyst": "analyst",
+    "interview": "participant",
 }
 
 # OpenAI reasoning families: hidden reasoning consumes completion tokens and custom
@@ -283,13 +284,19 @@ class LLM:
         raise LLMError(f"{role} call failed after {self._max_attempts} attempts: {_short(last)}")
 
     def text(self, role, system, user, *, temperature=None, max_tokens=500, meta=None, retries: int = 2) -> str:
-        """Plain-text reply. Empty replies are retried; replies cut off at the token limit are
-        retried with double the limit (models can spend their budget on hidden reasoning)."""
+        """Single-turn plain-text reply. See `chat`."""
+        return self.chat(
+            role, system, [{"role": "user", "content": user}],
+            temperature=temperature, max_tokens=max_tokens, meta=meta, retries=retries,
+        )
+
+    def chat(self, role, system, messages, *, temperature=None, max_tokens=500, meta=None, retries: int = 2) -> str:
+        """Plain-text reply to a conversation. Empty replies are retried; replies cut off at the
+        token limit are retried with double the limit (models can spend their budget on hidden
+        reasoning)."""
         budget, out = max_tokens, ""
         for attempt in range(retries + 1):
-            out, truncated = self._call(
-                role, system, [{"role": "user", "content": user}], temperature, budget, {**(meta or {}), "attempt": attempt}
-            )
+            out, truncated = self._call(role, system, list(messages), temperature, budget, {**(meta or {}), "attempt": attempt})
             out = (out or "").strip()
             if out and not truncated:
                 return out

@@ -53,7 +53,7 @@ def test_run_writes_all_outputs(small_study, tmp_path):
     for p in paths.values():
         assert p.exists() and p.stat().st_size > 0
     html = paths["report_html"].read_text()
-    assert "Mock run" in html and "Reliability checks" in html
+    assert "Mock run" in html and "Trust check" in html and "How opinions moved" in html
     data = json.loads(paths["data"].read_text())
     assert len(data["personas"]) == small_study.group_size
     assert len(paths["calls"].read_text().splitlines()) == len(llm.calls)

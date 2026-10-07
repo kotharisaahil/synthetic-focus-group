@@ -1,0 +1,106 @@
+# Example study: financial services, run in Spanish with a local name pool.
+# The study file stays in English for readability; `language` makes the whole session
+# (backstories, discussion, ratings, and analysis) happen in Spanish.
+
+title: Instant invoice payments for small businesses in Mexico
+objective: >
+  Understand whether small-business owners in Mexico would use a feature that lets their
+  customers pay invoices instantly by bank transfer, and what would make them trust it.
+category: business banking and getting paid by customers
+language: Spanish
+stimulus: >
+  A small-business banking app adds "Cobro al instante": you send a customer an invoice by
+  WhatsApp, they pay it by instant bank transfer, and the money lands in your account within
+  seconds. It costs 0.8% per payment, with no monthly fee. Card payments cost you about 3.5% today.
+
+groups: 3
+group_size: 6
+seed: 23
+
+names: [Alejandro, Mariana, José, Fernanda, Luis, Gabriela, Carlos, Daniela, Miguel, Valeria,
+        Jorge, Sofía, Ricardo, Paola, Andrés, Lucía, Héctor, Ximena, Rodrigo, Adriana]
+
+population:
+  - name: business_type
+    label: type of business
+    type: categorical
+    options:
+      food stall or small restaurant: 30
+      retail shop: 30
+      professional services: 25
+      online seller: 15
+
+  - name: monthly_revenue
+    label: monthly revenue
+    type: lognormal
+    median: 60000
+    p90: 250000
+    unit: MXN
+
+  - name: city_size
+    label: location
+    type: categorical
+    options:
+      Mexico City, Guadalajara or Monterrey: 45
+      mid-size city: 35
+      small town: 20
+
+  - name: cash_share
+    label: share of sales paid in cash
+    type: scale
+    mean: 4.5
+    sd: 1.6
+    low_label: almost no cash
+    high_label: almost all cash
+
+  - name: fee_sensitivity
+    label: sensitivity to payment fees
+    type: scale
+    mean: 5.0
+    sd: 1.4
+    low_label: fees barely matter
+    high_label: every peso of fees matters
+
+  - name: fraud_worry
+    label: worry about payment fraud
+    type: scale
+    mean: 4.8
+    sd: 1.5
+    low_label: rarely thinks about it
+    high_label: a constant concern
+
+ratings:
+  - id: adopt
+    label: Would use it
+    question: How likely would you be to start using Cobro al instante in the next month?
+    low_label: definitely would not
+    high_label: definitely would
+    expect:
+      - attribute: fee_sensitivity
+        direction: positive   # it is cheaper than cards, so fee-sensitive owners should like it more
+
+  - id: trust
+    label: Trusts it with money
+    question: How much would you trust this feature with your business's money?
+    low_label: not at all
+    high_label: completely
+    expect:
+      - attribute: fraud_worry
+        direction: negative
+
+guide:
+  - title: Getting paid today
+    question: How do your customers pay you today, and what is the most annoying part?
+    max_turns: 8
+
+  - title: First reaction
+    question: Here is Cobro al instante. What is your first reaction?
+    probes:
+      - Would your customers actually use it?
+    max_turns: 8
+
+  - title: Trust and fees
+    question: It costs 0.8% per payment. What would make you trust it, and is the price right?
+    probes:
+      - What would you need to see before switching from cash or cards?
+    max_turns: 8

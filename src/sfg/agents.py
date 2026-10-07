@@ -6,6 +6,7 @@ code supplies guarantees (everyone is heard, turn budgets hold, quotes are real)
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field, create_model
 
 from . import prompts
 from .config import RatingItem, Study, Topic
-from .llm import LLM
+from .llm import LLM, parallel_map
 from .personas import Persona
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ class ParticipantAgent:
             backstory=persona.backstory,
             anchors=persona.anchors(study),
             stimulus=study.stimulus,
-        )
+        ) + prompts.language_note(study.language)
 
     def speak(self, context: list[Turn], own_earlier: list[str], utterance: str, addressed: bool, meta: dict) -> str:
         """Reply to the moderator.
@@ -218,7 +219,7 @@ class ModeratorAgent:
             objective=study.objective,
             stimulus=study.stimulus,
             roster=", ".join(names),
-        )
+        ) + prompts.language_note(study.language, "everything you say to participants")
 
     def decide(
         self, topic: Topic, index: int, used: int, unheard: list[str], topic_turns: list[Turn]
@@ -315,8 +316,14 @@ def validate_quotes(analysis: Analysis, turns: list[Turn], names: list[str]) -> 
     for theme in analysis.themes:
         kept = []
         for q in theme.quotes:
-            who = resolve_name(q.speaker, names)
-            if who and quote_is_verbatim(q.quote, spoken.get(who, "")):
+            # With big panels, two people can share a first name ("Maya" and "Maya K.").
+            # Accept the quote only if it verifies against one of the people it could mean.
+            said = q.speaker.strip().lower()
+            candidates = [n for n in names if n.lower() == said] or [
+                n for n in names if said and n.split()[0].lower() == said.split()[0]
+            ]
+            who = next((n for n in candidates if quote_is_verbatim(q.quote, spoken.get(n, ""))), None)
+            if who:
                 kept.append(Quote(speaker=who, quote=q.quote.strip().strip('"“”')))
             else:
                 removed += 1
@@ -324,26 +331,64 @@ def validate_quotes(analysis: Analysis, turns: list[Turn], names: list[str]) -> 
     return analysis.model_copy(update={"themes": themes, "quotes_removed": analysis.quotes_removed + removed})
 
 
-def analyze(study: Study, llm: LLM, turns: list[Turn], names: list[str], ratings_text: str) -> Analysis:
-    transcript = "\n\n".join(
-        f"[Group {g}]\n" + format_turns([t for t in turns if t.group == g])
-        for g in sorted({t.group for t in turns})
-    )
-    analysis = llm.json(
+# Above this much transcript, analyze each group separately, then combine (about 30k tokens).
+ANALYST_SINGLE_PASS_CHARS = 120_000
+
+
+def _analyst_call(study: Study, llm: LLM, user: str, lines: list[Turn], names: list[str]) -> Analysis:
+    return llm.json(
         "analyst",
-        prompts.ANALYST_SYSTEM,
-        prompts.ANALYST_USER.format(
-            objective=study.objective,
-            stimulus=study.stimulus,
-            ratings=ratings_text,
-            transcript=transcript,
-        ),
+        prompts.ANALYST_SYSTEM + prompts.language_note(study.language, "the analysis"),
+        user,
         Analysis,
         temperature=0.2,
         max_tokens=12000,
-        meta={
-            "names": names,
-            "lines": [[t.speaker, t.text] for t in turns if t.kind == "participant"],
-        },
+        meta={"names": names, "lines": [[t.speaker, t.text] for t in lines if t.kind == "participant"]},
     )
-    return validate_quotes(analysis, turns, names)
+
+
+def analyze(
+    study: Study, llm: LLM, turns: list[Turn], names: list[str], ratings_text: str, progress=None
+) -> Analysis:
+    """Write the findings. Small studies get one pass over the full transcript. Large ones are
+    analyzed group by group (in parallel), then combined, so no single call has to hold every
+    transcript. Either way, every quote in the result is checked against the transcript."""
+    groups = sorted({t.group for t in turns})
+    by_group = {g: [t for t in turns if t.group == g] for g in groups}
+    blocks = {g: f"[Group {g}]\n" + format_turns(by_group[g]) for g in groups}
+    full = "\n\n".join(blocks.values())
+
+    def user_for(transcript: str) -> str:
+        return prompts.ANALYST_USER.format(
+            objective=study.objective, stimulus=study.stimulus, ratings=ratings_text, transcript=transcript
+        )
+
+    if len(groups) == 1 or len(full) <= ANALYST_SINGLE_PASS_CHARS:
+        return validate_quotes(_analyst_call(study, llm, user_for(full), turns, names), turns, names)
+
+    def one_group(g: int) -> Analysis:
+        if progress:
+            progress(f"Analyst is reading group {g} of {len(groups)}")
+        return validate_quotes(_analyst_call(study, llm, user_for(blocks[g]), by_group[g], names), by_group[g], names)
+
+    per_group = parallel_map(one_group, groups, study.models.max_parallel_groups)
+    if progress:
+        progress("Analyst is combining the groups")
+    findings = json.dumps(
+        [{"group": g, **a.model_dump(exclude={"quotes_removed"})} for g, a in zip(groups, per_group)], indent=1
+    )
+    final = _analyst_call(
+        study,
+        llm,
+        prompts.ANALYST_SYNTH_USER.format(
+            objective=study.objective,
+            stimulus=study.stimulus,
+            n=len(groups),
+            ratings=ratings_text,
+            group_findings=findings,
+        ),
+        turns,
+        names,
+    )
+    final = validate_quotes(final, turns, names)
+    return final.model_copy(update={"quotes_removed": final.quotes_removed + sum(a.quotes_removed for a in per_group)})

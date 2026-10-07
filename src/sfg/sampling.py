@@ -28,6 +28,12 @@ FIRST_NAMES = [
     "Grace", "Omar", "Lucia", "Ben", "Nadia", "Carlos", "Hannah", "Devon", "Mei", "Samuel",
     "Rosa", "Arjun", "Claire", "Tariq", "Ingrid", "Luis", "Keisha", "Pavel", "Amara", "Owen",
     "Yuki", "Rachel", "Mateo", "Leah", "Andre", "Fatima", "Colin", "Ana", "Dmitri", "Joy",
+    "Aaron", "Bianca", "Chidi", "Dana", "Emeka", "Farah", "Gabriel", "Hiro", "Isabel", "Jamal",
+    "Kavya", "Liam", "Marta", "Nikhil", "Olivia", "Paolo", "Quinn", "Rahul", "Sana", "Theo",
+    "Uma", "Victor", "Wen", "Ximena", "Yusuf", "Zara", "Adele", "Bruno", "Camila", "Diego",
+    "Esther", "Felix", "Gemma", "Hector", "Imani", "Jasper", "Kofi", "Lena", "Malik", "Noor",
+    "Oscar", "Pia", "Rafael", "Selin", "Tobias", "Valentina", "Wesley", "Yara", "Zoe", "Ahmed",
+    "Beatriz", "Connor", "Deepa", "Eli", "Freya", "Gustavo", "Hana", "Ivan", "Jin", "Kira",
 ]
 
 
@@ -84,20 +90,53 @@ def sample_population(study: Study, n: int, rng: random.Random, max_retries: int
     return people
 
 
-def assign_names(n: int, rng: random.Random) -> list[str]:
-    pool = FIRST_NAMES[:]
-    rng.shuffle(pool)
-    if n <= len(pool):
-        return pool[:n]
-    return [f"{pool[i % len(pool)]} {i // len(pool) + 1}" for i in range(n)]
+def assign_names(groups: int, group_size: int, rng: random.Random, pool: list[str] | None = None) -> list[str]:
+    """Names for every participant, in group order.
+
+    First names never repeat within a group, so "Maya" is always unambiguous in the room.
+    Across groups a first name is reused only once the pool runs out, and then a last initial
+    keeps the full name unique for the whole study.
+    """
+    base = list(dict.fromkeys(pool or FIRST_NAMES))  # de-duplicate, keep order
+    if len(base) < group_size:
+        raise ValueError(f"name pool has {len(base)} names but groups have {group_size} people")
+    shuffled = base[:]
+    rng.shuffle(shuffled)
+    used_full: set[str] = set()
+    uses: dict[str, int] = {}
+    out: list[str] = []
+    cursor = 0
+    for _ in range(groups):
+        in_group: set[str] = set()
+        for _ in range(group_size):
+            # least-used first name not already in this group
+            candidates = sorted(
+                (n for n in shuffled if n not in in_group),
+                key=lambda n: (uses.get(n, 0), (shuffled.index(n) - cursor) % len(shuffled)),
+            )
+            first = candidates[0]
+            cursor = (shuffled.index(first) + 1) % len(shuffled)
+            name = first
+            if name in used_full:
+                for letter in "ABCDEFGHJKLMNPRSTVWY":
+                    name = f"{first} {letter}."
+                    if name not in used_full:
+                        break
+            uses[first] = uses.get(first, 0) + 1
+            used_full.add(name)
+            in_group.add(first)
+            out.append(name)
+    return out
 
 
 def format_value(dim, value: Any) -> str:
     unit = getattr(dim, "unit", None)
-    if unit and unit.upper() in ("USD", "$"):
-        return f"${value:,.0f}"
     if isinstance(value, float) and value.is_integer():
         value = int(value)
+    if unit and unit.upper() in ("USD", "$"):
+        return f"${value:,.0f}"
+    if isinstance(value, (int, float)) and abs(value) >= 10_000:
+        value = f"{value:,.0f}"  # 54,941 MXN rather than 54941 MXN
     return f"{value} {unit}" if unit else str(value)
 
 

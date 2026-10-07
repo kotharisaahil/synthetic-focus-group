@@ -1,0 +1,103 @@
+# Example study: B2B software. IT and security leaders react to a fictional patching product.
+# Shows a professional panel, with role and company attributes instead of household ones.
+
+title: Patchwise buyer interviews
+objective: >
+  Learn whether IT and security leaders at mid-size companies would evaluate an automated
+  patching product, which claims they believe, and what would block a purchase.
+category: IT security and patch management software
+stimulus: >
+  Patchwise automatically tests and rolls out security patches across servers and laptops.
+  It stages every patch on a copy of your systems first and promises zero unplanned downtime.
+  Pricing is $9 per device per month, billed annually, with a 30-day pilot on up to 200 devices.
+
+groups: 2
+group_size: 5
+seed: 11
+
+population:
+  - name: role
+    type: categorical
+    options:
+      CISO or head of security: 30
+      IT director: 40
+      senior security engineer: 30
+
+  - name: company_size
+    label: company size
+    type: categorical
+    options:
+      200 to 500 employees: 35
+      500 to 2,000 employees: 45
+      2,000 to 5,000 employees: 20
+
+  - name: industry
+    type: categorical
+    options:
+      healthcare: 25
+      financial services: 25
+      manufacturing: 30
+      retail: 20
+
+  - name: years_in_role
+    label: years in current role
+    type: uniform
+    min: 1
+    max: 15
+    unit: years
+
+  - name: risk_tolerance
+    label: tolerance for change risk in production
+    type: scale
+    mean: 3.2
+    sd: 1.5
+    low_label: will not touch production without weeks of testing
+    high_label: comfortable automating changes to production
+
+  - name: vendor_fatigue
+    label: fatigue with new security vendors
+    type: scale
+    mean: 5.0
+    sd: 1.3
+    low_label: happy to evaluate new tools
+    high_label: actively consolidating vendors and avoids new ones
+
+ratings:
+  - id: evaluate
+    label: Would start a pilot
+    question: How likely would you be to start the 30-day pilot in the next quarter?
+    low_label: definitely would not
+    high_label: definitely would
+    expect:
+      - attribute: vendor_fatigue
+        direction: negative
+
+  - id: downtime_claim
+    label: Believes zero-downtime claim
+    question: How much do you believe the promise of zero unplanned downtime?
+    low_label: do not believe it at all
+    high_label: fully believe it
+    expect:
+      - attribute: risk_tolerance
+        direction: positive
+
+guide:
+  - title: How patching works today
+    question: Walk me through how a critical patch gets from release to your production systems today.
+    probes:
+      - Where does it slow down or break?
+      - Who gets blamed when a patch causes an outage?
+    max_turns: 8
+
+  - title: First reaction
+    question: Here is Patchwise. What is your first reaction?
+    probes:
+      - Which part would you want to verify before believing it?
+    max_turns: 8
+
+  - title: Buying it
+    question: At $9 per device per month, what would it take to get this approved at your company?
+    probes:
+      - Who else would need to sign off?
+      - What would make you walk away during the pilot?
+    max_turns: 8

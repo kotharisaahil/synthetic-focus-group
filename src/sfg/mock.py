@@ -135,3 +135,8 @@ class MockProvider:
             "disagreements": ["[MOCK] Participants split on whether price or taste matters more."],
             "open_questions": ["[MOCK] How would results differ with real respondents?"],
         })
+
+    def _interview(self, meta: dict) -> str:
+        p = meta["persona"]
+        r = _rng("interview", p["id"], meta.get("question"), meta.get("turn"))
+        return f"[MOCK] Speaking just for myself, {r.choice(BODIES)}{r.choice(CLOSERS)}"

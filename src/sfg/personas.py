@@ -62,7 +62,7 @@ def build_personas(
 ) -> list[Persona]:
     n = study.groups * study.group_size
     draws = sample_population(study, n, rng)
-    names = assign_names(n, rng)
+    names = assign_names(study.groups, study.group_size, rng, study.names)
     base_t = study.models.participant_temperature
     personas: list[Persona] = []
     for i, attrs in enumerate(draws):
@@ -84,7 +84,7 @@ def build_personas(
             progress(f"Writing backstory for {p.name} ({p.id})")
         return llm.text(
             "backstory",
-            prompts.BACKSTORY_SYSTEM,
+            prompts.BACKSTORY_SYSTEM + prompts.language_note(study.language, "the background"),
             prompts.BACKSTORY_USER.format(
                 name=p.name,
                 profile=p.profile(study),
